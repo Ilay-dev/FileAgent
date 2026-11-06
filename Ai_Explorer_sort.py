@@ -6,6 +6,8 @@ import threading
 import requests
 import time
 import subprocess
+import re
+import ctypes  # Used to force minimize/hide external window handles on Windows
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from openai import OpenAI
@@ -80,7 +82,7 @@ class AIFileAgentApp(ctk.CTk):
         lbl_steps.pack(side="left", padx=(15, 5))
         
         self.steps_entry = ctk.CTkEntry(top_frame, width=55, fg_color="#1a1a1a", text_color="#ffffff", border_color="#444444", justify="center", font=("Arial", 11, "bold"))
-        self.steps_entry.insert(0, "30")
+        self.steps_entry.insert(0, "100")  # Default max steps value
         self.steps_entry.pack(side="right", padx=15, pady=12)
 
         # --- 2. CHAT DISPLAY ---
@@ -129,10 +131,76 @@ class AIFileAgentApp(ctk.CTk):
             self.btn_mode_lvl.configure(fg_color="#1a1a1a", text_color="#ffffff", font=("Arial", 11))
 
     def log(self, sender, message):
+        """Clean, modern logger without separator lines, featuring markdown support for AI outputs."""
         self.chat_box.configure(state="normal")
-        self.chat_box.insert("end", f"[{sender}] {message}\n")
+        txt_widget = self.chat_box._textbox
+
+        # Define styles
+        txt_widget.tag_config("sender_system", font=("Consolas", 10, "bold"), foreground="#666666")
+        txt_widget.tag_config("sender_user", font=("Consolas", 10, "bold"), foreground="#aaaaaa")
+        txt_widget.tag_config("sender_ai", font=("Consolas", 10, "bold"), foreground="#ffffff")
+        txt_widget.tag_config("sender_tool", font=("Consolas", 10, "bold"), foreground="#00ffcc")
+        
+        txt_widget.tag_config("h3", font=("Arial", 13, "bold"), foreground="#ffffff", spacing1=10, spacing2=4)
+        txt_widget.tag_config("bold", font=("Consolas", 12, "bold"), foreground="#ffffff")
+        txt_widget.tag_config("code", font=("Consolas", 11), background="#1a1a1a", foreground="#00ffcc")
+        txt_widget.tag_config("bullet", lmargin1=15, lmargin2=30)
+        txt_widget.tag_config("body", font=("Consolas", 12), foreground="#dddddd")
+
+        tag_map = {
+            "SYSTEM": "sender_system",
+            "USER": "sender_user",
+            "AI": "sender_ai",
+            "TOOL": "sender_tool",
+            "ERROR": "sender_tool",
+            "UNDO": "sender_tool"
+        }
+        sender_tag = tag_map.get(sender, "sender_system")
+
+        # Print Sender Header
+        self.chat_box.insert("end", f"[{sender}]\n", sender_tag)
+
+        # Print Message Body (with Markdown parsing for AI)
+        if sender == "AI":
+            lines = message.split("\n")
+            for line in lines:
+                if line.startswith("### "):
+                    self.chat_box.insert("end", f"\n{line[4:].strip()}\n", "h3")
+                elif line.startswith("## "):
+                    self.chat_box.insert("end", f"\n{line[3:].strip()}\n", "h3")
+                elif line.strip().startswith("* ") or line.strip().startswith("- "):
+                    self.chat_box.insert("end", "  • ", "bullet")
+                    self.insert_inline_markdown(line.strip()[2:], "bullet")
+                    self.chat_box.insert("end", "\n")
+                else:
+                    if line.strip():
+                        self.insert_inline_markdown(line + "\n", "body")
+                    else:
+                        self.chat_box.insert("end", "\n")
+        else:
+            self.chat_box.insert("end", f"{message}\n", "body")
+
+        self.chat_box.insert("end", "\n")
         self.chat_box.see("end")
         self.chat_box.configure(state="disabled")
+
+    def insert_inline_markdown(self, text, base_tag="body"):
+        """Helper to parse inline markdown like **bold** and `code`."""
+        pattern = r"(\*\*.*?\*\*|`.*?`)"
+        tokens = re.split(pattern, text)
+        for token in tokens:
+            if not token:
+                continue
+            if token.startswith("**") and token.endswith("**"):
+                clean_text = token[2:-2]
+                tags = (base_tag, "bold")
+                self.chat_box.insert("end", clean_text, tags)
+            elif token.startswith("`") and token.endswith("`"):
+                clean_text = token[1:-1]
+                tags = (base_tag, "code")
+                self.chat_box.insert("end", clean_text, tags)
+            else:
+                self.chat_box.insert("end", token, (base_tag,))
 
     def browse_folder(self):
         folder = filedialog.askdirectory()
@@ -145,22 +213,30 @@ class AIFileAgentApp(ctk.CTk):
                 {
                     "role": "system", 
                     "content": (
-                        "You are an extremely thorough and precise desktop file manager agent. "
-                        "You have access to local file tools within the selected working directory. "
-                        "To inspect and sort subfolders, always use `tool_list_directory` with the subpath parameter first. "
-                        "You can delete entire folders using `tool_delete_folder`, delete files, move files and folders, and create subfolders. "
-                        "Execute necessary actions autonomously through tool calls until the requested sorting and deletion tasks are fully completed."
+                        "You are an autonomous, relentless desktop file manager agent. "
+                        "Your absolute priority is to completely finish the user's file organization request from start to finish WITHOUT stopping early. "
+                        "EXECUTE actions immediately using tool calls in a continuous loop until the entire directory is fully and perfectly organized. "
+                        "When all tasks are fully completed, provide a clean, well-structured final summary using Markdown formatting (like headers ###, bold text **, and bulleted lists) to show the user exactly what was accomplished."
                     )
                 }
             ]
             self.last_run_actions.clear()
+
+    def force_minimize_lm_studio(self):
+        """Polls for the LM Studio window handle and instantly minimizes it via Win32 API."""
+        for _ in range(40):
+            hwnd = ctypes.windll.user32.FindWindowW(None, "LM Studio")
+            if hwnd:
+                # 6 = SW_MINIMIZE (minimizes window). Change to 0 (SW_HIDE) if you want it completely invisible.
+                ctypes.windll.user32.ShowWindow(hwnd, 6)
+                break
+            time.sleep(0.5)
 
     # ==================== ROBUST LM STUDIO AUTO-START & LOAD LOGIC ====================
     def ensure_lm_studio_running(self):
         server_is_running = False
         model_already_loaded = False
 
-        # Check if local server is responding and if model is loaded
         try:
             res = requests.get(self.models_url, timeout=2)
             if res.status_code == 200:
@@ -172,24 +248,28 @@ class AIFileAgentApp(ctk.CTk):
             pass
 
         if server_is_running and model_already_loaded:
+            self.log("SYSTEM", "LM Studio Server & Model are already online and ready!")
             return True
 
         # Launch LM Studio if server is offline
         if not server_is_running:
             self.log("SYSTEM", "Starting LM Studio in the background...")
-            path_shortcut = r"C:\Users\Ilay\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\LM Studio.lnk"
             path_exe1 = os.path.expandvars(r"%LOCALAPPDATA%\LM Studio\LM Studio.exe")
             path_exe2 = os.path.expandvars(r"%LOCALAPPDATA%\Programs\lm-studio\LM Studio.exe")
+            path_shortcut = r"C:\Users\Ilay\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\LM Studio.lnk"
             
+            # Start background thread to catch and minimize the window immediately when it opens
+            threading.Thread(target=self.force_minimize_lm_studio, daemon=True).start()
+
             lm_studio_launched = False
-            for p in [path_shortcut, path_exe1, path_exe2]:
-                try:
-                    os.startfile(p)
-                    lm_studio_launched = True
-                    break
-                except Exception:
+            for p in [path_exe1, path_exe2, path_shortcut]:
+                if os.path.exists(p) or p == path_shortcut:
                     try:
-                        os.system(f'start "" "{p}"')
+                        if p.endswith(".lnk"):
+                            os.startfile(p)
+                        else:
+                            subprocess.Popen([p])
+                        
                         lm_studio_launched = True
                         break
                     except Exception:
@@ -558,7 +638,6 @@ class AIFileAgentApp(ctk.CTk):
             else:
                 break
 
-        # Fixed syntax error here:
         if self.current_batch_actions:
             self.last_run_actions = list(self.current_batch_actions)
 
