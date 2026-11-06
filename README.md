@@ -28,7 +28,6 @@ A fully local, privacy-first desktop file management agent powered by **CustomTk
 
 ```
 
----
 
 ## Installation & Running
 
@@ -40,22 +39,4 @@ python Ai_Explorer_sort.py
 ```
 
 
-
----
-
-## Building a Standalone Executable (.exe)
-
-You can package this script into a standalone `.exe` using **PyInstaller**.
-
-Open your terminal in the project directory and run:
-
-```bash
-pyinstaller --noconsole --onedir Ai_Explorer_sort.py
-
-```
-
-* `--noconsole`: Hides the command prompt window, launching only the graphical user interface.
-* `--onedir`: Creates a clean application folder (recommended for CustomTkinter compatibility).
-
-You will find your executable inside the `dist/Ai_Explorer_sort/` folder.
 
